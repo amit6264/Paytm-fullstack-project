@@ -1,1 +1,63 @@
+name: Frontend CI/CD (Private via Bastion)
 
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy-frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy Frontend using Bastion
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.FRONTEND_PRIVATE_IP }}
+          username: ${{ secrets.FRONTEND_USER }}
+          key: ${{ secrets.FRONTEND_KEY }}
+          proxy_host: ${{ secrets.BASTION_HOST }}
+          proxy_username: ${{ secrets.BASTION_USER }}
+          proxy_key: ${{ secrets.BASTION_KEY }}
+          timeout: 20m
+          script_stop: true
+
+          script: |
+            echo "🚀 Frontend Deployment (httpd FIRST)"
+
+            # 1. Install git & clone repo
+            sudo yum install git -y
+            cd /home/ec2-user
+            rm -rf Paytm-fullstack-project
+            git clone https://github.com/amit6264/Paytm-fullstack-project.git Paytm-fullstack-project
+
+            # ===== HTTPD TASKS FIRST =====
+            echo "🌐 Setting up Apache httpd..."
+            sudo yum update -y
+            sudo yum install httpd -y
+            sudo systemctl start httpd
+            sudo systemctl enable httpd
+            echo "✅ Apache: $(sudo systemctl is-active httpd)"
+
+            # Deploy static frontend files FROM Frontend-code
+            echo "📁 Copying index.html from Frontend-code..."
+            cd /home/ec2-user/Paytm-fullstack-project/Frontend
+            sudo rm -rf /var/www/html/*
+            sudo cp -r Frontend-code/* /var/www/html/
+            sudo chown -R apache:apache /var/www/html
+            sudo systemctl restart httpd
+            echo "✅ Static site: http://$(curl -s ifconfig.me)"
+
+            # ===== NOW backends3.py (PORT 5000) =====
+            echo "🐍 backends3.py setup (port 5000)..."
+            cd /home/ec2-user/Paytm-fullstack-project/Frontend/Frontend-S3
+            sudo yum install python3 python3-pip -y
+            pip3 install -r requirements.txt
+
+            echo "🌐 Starting backends3.py:5000..."
+            # pkill -f backends3.py || true
+            # sleep 2
+            nohup python3 backends3.py > backend.log 2>&1 < /dev/null &
+
+            echo "🎉 FRONTEND COMPLETE!"
+            echo "🌐 Static: http://$(curl -s ifconfig.me)"
+            echo "🌐 API:    http://$(curl -s ifconfig.me):5000"
