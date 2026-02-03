@@ -1,1 +1,87 @@
+name: Backend CI/CD (Private via Bastion)
 
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy Backend using Bastion (First Time + MariaDB)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.BACKEND_PRIVATE_IP }}
+          username: ${{ secrets.BACKEND_USER }}
+          key: ${{ secrets.BACKEND_KEY }}
+          # Bastion settings
+          proxy_host: ${{ secrets.BASTION_HOST }}
+          proxy_username: ${{ secrets.BASTION_USER }}
+          proxy_key: ${{ secrets.BASTION_KEY }}
+          # Extended timeout for first deployment + DB setup
+          timeout: 60m
+          script_stop: true
+          script: |
+            set -e
+            echo "🚀 FIRST TIME Backend + MariaDB deployment started"
+
+            # ===== 1. INSTALL SYSTEM DEPENDENCIES + MARIADB =====
+            echo "📦 Installing system dependencies + MariaDB 10.5..."
+            if command -v yum &> /dev/null; then
+              # Amazon Linux 2
+              sudo yum update -y &>/dev/null
+              sudo yum install -y git python3 python3-pip mariadb105-server &>/dev/null
+              sudo systemctl start mariadb
+              sudo systemctl enable mariadb
+            elif command -v apt &> /dev/null; then
+              # Ubuntu/Debian
+              sudo apt update &>/dev/null
+              sudo apt install -y software-properties-common &>/dev/null
+              sudo apt-key adv --fetch-keys 'https://mariadb.org/mariadb_release_signing_key.asc' &>/dev/null
+              sudo add-apt-repository 'deb [arch=amd64] http://nyc2.mirrors.digitalocean.com/mariadb/repo/10.5/ubuntu focal main' &>/dev/null || echo "MariaDB repo already exists"
+              sudo apt update &>/dev/null
+              sudo apt install -y git python3 python3-pip python3-venv mariadb-server &>/dev/null
+              sudo systemctl start mariadb
+              sudo systemctl enable mariadb
+              sudo mysql_secure_installation <<< $'n\ny\ny\ny\ny' &>/dev/null || true
+            fi
+            echo "✅ MariaDB 10.5 + dependencies installed"
+            echo "🔍 MariaDB status: $(sudo systemctl is-active mariadb)"
+
+            # ===== 2. CLONE REPOSITORY (fresh install) =====
+            echo "🔄 Cloning Paytm-fullstack-project..."
+            REPO_DIR="/home/ec2-user/Paytm-fullstack-project"
+            rm -rf "$REPO_DIR"  # Clean any partial clone
+            git clone https://github.com/amit6264/Paytm-fullstack-project.git "$REPO_DIR"
+            cd "$REPO_DIR/Backend"
+
+            # ===== 3. SETUP PYTHON ENVIRONMENT =====
+            echo "🐍 Creating Python virtual environment..."
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+
+            # ===== 4. START BACKEND SERVICE =====
+            echo "▶️ Starting Backend service (detached)..."
+            nohup python rds.py > backend.log 2>&1 < /dev/null &
+            sleep 15  # Give Flask + DB connection time
+
+            # ===== 5. VERIFY EVERYTHING =====
+            if pgrep -f "rds.py" > /dev/null; then
+              PID=$(pgrep -f "rds.py")
+              echo "✅ Backend started successfully! PID: $PID"
+              echo "📋 First 15 lines of logs:"
+              tail -15 backend.log || echo "Logs not ready yet"
+              echo "🎉 FIRST DEPLOYMENT + MARIADB COMPLETED!"
+            else
+              echo "❌ Backend FAILED to start!"
+              echo "📋 Check logs:"
+              tail -20 backend.log || echo "No logs yet"
+              echo "🔍 Running processes:"
+              ps aux | grep rds.py || echo "No rds.py process found"
+              echo "🔍 MariaDB status:"
+              sudo systemctl status mariadb --no-pager -l || echo "MariaDB check failed"
+              exit 1
+            fi
